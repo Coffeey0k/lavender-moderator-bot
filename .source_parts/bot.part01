@@ -1,0 +1,122 @@
+import asyncio
+import logging
+import os
+import time
+from collections import deque
+from datetime import datetime, timezone
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ChatMemberStatus, ParseMode
+from aiogram.filters import Command, CommandObject, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    Message, ChatJoinRequest, ChatMemberUpdated, CallbackQuery,
+    InlineKeyboardMarkup, InlineKeyboardButton, BotCommand,
+    BotCommandScopeAllPrivateChats, BotCommandScopeChat
+)
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+
+from storage import Store
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("lavender_moderator")
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+CHAT_ID_RAW = os.getenv("CHAT_ID", "").strip()
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+DB_PATH = os.getenv("DB_PATH", "moderator.sqlite3")
+WELCOME_TEXT = os.getenv(
+    "WELCOME_TEXT",
+    "Добро пожаловать в Lavender Dream! 💜\nПожалуйста, ознакомься с правилами чата."
+)
+RAID_WINDOW_SECONDS = int(os.getenv("RAID_WINDOW_SECONDS", "60"))
+RAID_THRESHOLD = int(os.getenv("RAID_THRESHOLD", "10"))
+USER_REQUEST_COOLDOWN = int(os.getenv("USER_REQUEST_COOLDOWN", "30"))
+BOT_PUBLIC_LINK = os.getenv("BOT_PUBLIC_LINK", "").strip()
+RULES_TEXT = os.getenv("RULES_TEXT", "Перед заполнением анкеты ознакомься с правилами группы.").strip()
+RULES_URL = os.getenv("RULES_URL", "").strip()
+INFO_CHANNEL_URL = os.getenv("INFO_CHANNEL_URL", "").strip()
+LESSONS_CHANNEL_URL = os.getenv("LESSONS_CHANNEL_URL", "").strip()
+
+if not BOT_TOKEN:
+    raise SystemExit("Не задан BOT_TOKEN. Скопируй .env.example в .env и заполни настройки.")
+try:
+    CHAT_ID = int(CHAT_ID_RAW)
+except ValueError:
+    raise SystemExit("CHAT_ID должен быть числовым ID группы/супергруппы, например -1001234567890.")
+try:
+    ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip()}
+except ValueError:
+    raise SystemExit("ADMIN_IDS должен содержать Telegram ID администраторов через запятую.")
+if not ADMIN_IDS:
+    raise SystemExit("Добавь хотя бы один Telegram ID в ADMIN_IDS.")
+
+bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+store = Store(DB_PATH)
+recent_requests = deque()
+raid_until = 0.0
+
+class ApplicationForm(StatesGroup):
+    photo = State()
+    character_name = State()
+    nickname = State()
+    telegram_username = State()
+
+class RejectionForm(StatesGroup):
+    reason = State()
+
+
+
+def esc(value) -> str:
+    # Minimal HTML escaping for untrusted Telegram fields.
+    s = str(value or "")
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def user_label(user) -> str:
+    name = " ".join(x for x in [user.first_name, user.last_name] if x).strip()
+    if user.username:
+        name += f" (@{esc(user.username)})"
+    return esc(name or "Без имени")
+
+
+def admin_keyboard(request_id: int, user_id: int, suspicious: bool) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{request_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{request_id}"),
+    ]
+    rows = [buttons, [
+        InlineKeyboardButton(text="🚫 В чёрный список", callback_data=f"ban:{user_id}:{request_id}")
+    ]]
+    if suspicious:
+        rows.insert(0, [InlineKeyboardButton(text="⚠️ Подозрительная заявка", callback_data="noop")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def is_admin(user_id: int, chat_id: int | None = None) -> bool:
+    if user_id in ADMIN_IDS:
+        return True
+    # Also honor current Telegram chat administrators, but only if explicitly requested.
+    if chat_id is not None:
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+            return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR)
+        except Exception:
+            return False
+    return False
+
+
+def detect_raid(user_id: int) -> bool:
+    global raid_until
+    now = time.monotonic()
+    while recent_requests and now - recent_requests[0] > RAID_WINDOW_SECONDS:
+        recent_requests.popleft()
+    recent_requests.append(now)
+    if len(recent_requests)
