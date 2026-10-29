@@ -244,7 +244,7 @@ async def form_telegram_username(message: Message, state: FSMContext):
     await message.answer(f"Анкета №{app_id} заполнена и отправлена администраторам.\nКогда проверишь всё ещё раз, напиши «готово», чтобы подтвердить отправку.")
     await state.update_data(confirm_application_id=app_id)
 
-@dp.message(F.chat.type == "private", F.text.func(lambda text: text.strip().casefold() == "готово"))
+@dp.message(F.chat.type == "private", F.text.func(lambda text: (text or "").strip().casefold() == "готово"))
 async def confirm_application(message: Message, state: FSMContext):
     app = store.latest_application(message.from_user.id, ["draft"])
     if not app:
