@@ -1,0 +1,99 @@
+') >= RAID_THRESHOLD:
+        raid_until = max(raid_until, now + RAID_WINDOW_SECONDS)
+    # A raid is a warning only: never auto-approve or auto-reject.
+    return now < raid_until
+
+
+def application_review_keyboard(application_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Одобрить анкету", callback_data=f"appapprove:{application_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"appreject:{application_id}"),
+    ]])
+
+
+async def update_application_review_cards(application_id: int, status_line: str, fallback_message=None):
+    """Update every admin's separate DM card for this application."""
+    cards = store.application_review_messages(application_id)
+    if not cards and fallback_message is not None:
+        cards = [{
+            "chat_id": fallback_message.chat.id,
+            "message_id": fallback_message.message_id,
+            "caption": fallback_message.caption or "",
+        }]
+
+    updated = 0
+    for card in cards:
+        caption = card.get("caption", "") or ""
+        # Avoid adding the same result twice if a callback is retried.
+        if status_line.strip() not in caption:
+            caption += status_line
+        try:
+            await bot.edit_message_caption(
+                chat_id=card["chat_id"],
+                message_id=card["message_id"],
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+            updated += 1
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            # One admin may have deleted the message or blocked the bot; still update the rest.
+            log.warning(
+                "Не удалось обновить карточку анкеты №%s у chat_id=%s: %s",
+                application_id, card["chat_id"], exc,
+            )
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=card["chat_id"], message_id=card["message_id"], reply_markup=None
+                )
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass
+    return updated
+
+@dp.message(Command("start"), F.chat.type == "private")
+async def start_cmd(message: Message, state: FSMContext, command: CommandObject):
+    payload = (command.args or "").strip()
+    if payload not in ("", "apply", "new"):
+        await message.answer("Неизвестная ссылка. Напиши /start, чтобы начать заново.")
+        return
+    if store.is_banned(message.from_user.id):
+        await message.answer("🚫 Ты не можешь подать анкету: аккаунт находится в чёрном списке.")
+        return
+    existing = store.latest_application(message.from_user.id)
+    if existing and existing["status"] == "pending":
+        await message.answer(f"Твоя анкета уже отправлена администраторам (№{existing['id']}). Дождись решения.")
+        return
+    if existing and existing["status"] == "approved":
+        await message.answer("Твоя анкета уже одобрена. Используй последнюю ссылку, которую я отправил.")
+        return
+    await state.clear()
+    links = []
+    if RULES_URL:
+        links.append(f'📜 Правила: {RULES_URL}')
+    if INFO_CHANNEL_URL:
+        links.append(f'📢 Информационный канал: {INFO_CHANNEL_URL}')
+    if LESSONS_CHANNEL_URL:
+        links.append(f'📚 Канал с уроками: {LESSONS_CHANNEL_URL}')
+    text = "Привет! 💜 Добро пожаловать в проверку Lavender Dream.\n\n" + RULES_TEXT
+    if links:
+        text += "\n\n" + "\n".join(links)
+    text += "\n\nСейчас заполним анкету. Отправь фотографию персонажа отдельным сообщением."
+    await message.answer(text, disable_web_page_preview=True)
+    await state.set_state(ApplicationForm.photo)
+
+@dp.message(ApplicationForm.photo, F.photo)
+async def form_photo(message: Message, state: FSMContext):
+    await state.update_data(photo_file_id=message.photo[-1].file_id)
+    await message.answer("2/4. Имя персонажа (если нет — отправь тире: -).")
+    await state.set_state(ApplicationForm.character_name)
+
+@dp.message(ApplicationForm.photo)
+async def form_photo_reminder(message: Message):
+    await message.answer("Пожалуйста, отправь именно фотографию персонажа.")
+
+@dp.message(ApplicationForm.character_name, F.text)
+async def form_character_name(message: Message, state: FSMContext):
+    value = message.text.strip()
+    await state.update_data(character_name="" if value == "-" else value[:200])
+    await message.answer("3/4. Напиши свой псевдоним (кличку).")
+    await state.set_state(ApplicationForm.nickname)
