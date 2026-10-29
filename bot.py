@@ -557,7 +557,7 @@ async def stats_cmd(message: Message):
     )
 
 
-@dp.message(Command("ankety"))
+@dp.message(Command("ankety"), F.chat.type == "private")
 async def pending_applications_cmd(message: Message):
     if not message.from_user or not await is_admin(message.from_user.id):
         return
