@@ -111,9 +111,13 @@ class Store:
                 (application_id,),
             )]
 
-    def pending_applications(self, limit=20):
+    def pending_applications(self, limit=None):
         with self.connect() as conn:
-            return [dict(r) for r in conn.execute("SELECT * FROM applications WHERE status='pending' ORDER BY id DESC LIMIT ?", (limit,))]
+            if limit is None:
+                rows = conn.execute("SELECT * FROM applications WHERE status='pending' ORDER BY id ASC").fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM applications WHERE status='pending' ORDER BY id ASC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
 
     def connect(self):
         conn = sqlite3.connect(self.path, timeout=10)
