@@ -557,6 +557,43 @@ async def stats_cmd(message: Message):
     )
 
 
+@dp.message(Command("ankety"))
+async def pending_applications_cmd(message: Message):
+    if not message.from_user or not await is_admin(message.from_user.id):
+        return
+    rows = store.pending_applications()
+    if not rows:
+        await message.answer("✅ Необработанных анкет нет.")
+        return
+
+    await message.answer(f"📋 Необработанных анкет: <b>{len(rows)}</b>")
+    sent = 0
+    for app in rows:
+        caption = (
+            f"📝 <b>Анкета Lavender Dream №{app['id']}</b>\n"
+            f"Имя в Telegram: {esc(app['full_name'])}\n"
+            f"Username аккаунта: @{esc(app['username']) if app['username'] else 'нет'}\n"
+            f"Telegram ID: <code>{app['user_id']}</code>\n"
+            f"1. Фото персонажа — приложено\n"
+            f"2. Имя персонажа: {esc(app['character_name'] or 'не указано')}\n"
+            f"3. Псевдоним: {esc(app['nickname'])}\n"
+            f"4. Telegram username: {esc(app['telegram_username'])}\n\n"
+            "Ожидает решения администрации."
+        )
+        try:
+            card = await message.answer_photo(
+                app["photo_file_id"],
+                caption=caption,
+                reply_markup=application_review_keyboard(app["id"]),
+                parse_mode=ParseMode.HTML,
+            )
+            store.add_application_review_message(app["id"], message.chat.id, card.message_id, caption)
+            sent += 1
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            log.warning("Не удалось показать анкету №%s через /ankety: %s", app["id"], exc)
+    if sent < len(rows):
+        await message.answer(f"Показано {sent} из {len(rows)} анкет. Ошибки отправки записаны в журнал.")
+
 @dp.message(Command("pending"))
 async def pending_cmd(message: Message):
     if not await is_admin(message.from_user.id):
@@ -655,6 +692,7 @@ async def help_cmd(message: Message):
         await message.answer(
             "<b>Команды модератора Lavender Dream</b>\n\n"
             "/stats — статистика анкет и заявок\n"
+            "/ankety — все необработанные анкеты участников\n"
             "/pending — ожидающие заявки на вступление\n"
             "/ban TELEGRAM_ID причина — добавить в чёрный список\n"
             "/unban TELEGRAM_ID — убрать из чёрного списка\n"
@@ -673,6 +711,7 @@ async def configure_bot_commands():
     ]
     admin_commands = public_commands + [
         BotCommand(command="stats", description="Статистика анкет и заявок"),
+        BotCommand(command="ankety", description="Все необработанные анкеты"),
         BotCommand(command="pending", description="Ожидающие заявки на вступление"),
         BotCommand(command="ban", description="Добавить в чёрный список"),
         BotCommand(command="unban", description="Убрать из чёрного списка"),
