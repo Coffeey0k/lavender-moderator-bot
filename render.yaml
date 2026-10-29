@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: lavender-moderator-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    disk:
+      name: moderator-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: DB_PATH
+        value: /var/data/moderator.sqlite3
